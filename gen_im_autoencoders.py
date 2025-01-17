@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Tuple
 
 # Сеть кодировщика VAE
 latent_dim: int = 2 # Размерность скрытого пространства: двумерная плоскость
+
 # Создаем входной слой 28x28 с 1 каналом
 encoder_inputs: keras.Input = keras.Input(shape=(28, 28, 1))
 # Создаем сверточный слой (Conv2D) (кол-во выходных фильтров, размер ядра свертки, ф-я активацит, способ обработки границ изображения (с сохранением размера))
@@ -42,8 +43,8 @@ class Sampler(layers.Layer):
         epsilon: tf.Tensor = tf.random.normal(shape=(batch_size, z_size))  # тензор случайных значений из станд. нормального распределения
         return z_mean + tf.exp(0.5 * z_log_var) * epsilon
     
-   
-latent_inputs: keras.Input = keras.Input(shape=(latent_dim,)) # Входной слой декодера 
+# Входной слой декодера    
+latent_inputs: keras.Input = keras.Input(shape=(latent_dim,)) 
 #  Произвести столько же коэффициентов из вектора, сколько имеется на уровне слоя Flatten в кодировщике
 x: tf.Tensor = layers.Dense(7 * 7 * 64, activation="relu")(latent_inputs)
 # вектор обратно в 3-мерный тензор как в Flatten
@@ -127,7 +128,7 @@ mnist_digits = np.expand_dims(mnist_digits, -1).astype("float32") / 255
 vae: keras.Model = VAE(encoder, decoder)
 # не передаем аргумент loss в вызов compile(), потому что вычисление потерь выполняется в train_step()
 vae.compile(optimizer=keras.optimizers.Adam(), run_eagerly=True)
-vae.fit(mnist_digits, epochs=30, batch_size=128) # не передаем цели в метод fit(), поскольку их нет в train_step
+vae.fit(mnist_digits, epochs=30, batch_size=128) # не передаем цели y в метод fit(), поскольку их нет в train_step
 
 # Отобразить сетку 30 × 30 цифр (всего 900 цифр)
 n: int = 30
@@ -141,9 +142,9 @@ grid_y: np.ndarray = np.linspace(-1, 1, n)[::-1]
 for i, yi in enumerate(grid_y):
     for j, xi in enumerate(grid_x):
         # Для каждой ячейки выбрать цифру и добавить в изобр
-        z_sample: np.ndarray = np.array([[xi, yi]])
-        x_decoded: np.ndarray = vae.decoder.predict(z_sample)
-        digit: np.ndarray = x_decoded[0].reshape(digit_size, digit_size)
+        z_sample: np.ndarray = np.array([[xi, yi]]) # Создаем точку в скрытом пространстве
+        x_decoded: np.ndarray = vae.decoder.predict(z_sample) # Пропускает точку через декодировщик, получая восстановленное изображение
+        digit: np.ndarray = x_decoded[0].reshape(digit_size, digit_size) # Приводим к нужной форме
         figure[
             i * digit_size : (i + 1) * digit_size,
             j * digit_size : (j + 1) * digit_size,

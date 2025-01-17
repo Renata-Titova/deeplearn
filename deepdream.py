@@ -27,10 +27,11 @@ plt.imshow(keras.utils.load_img(base_image_path))
 Для каждого слоя получим скалярную оценку, взвешивающую вклад слоя в потери, которые мы будем максимизировать в процессе градиентного восхождения
 """
 from tensorflow.keras.applications import inception_v3
-model = inception_v3.InceptionV3(weights="imagenet", include_top=False)
+model = inception_v3.InceptionV3(weights="imagenet", include_top=False) # удаляем классификационный слой, оставляем сверточный
 
 # Определение вклада каждого слоя в потери DeepDream
-layer_settings: Dict[str, float] = { # Слои, для которых максимизируем активации, и их веса в общей сумме потерь. Эти параметры можно настраивать и получать новые визуальные эффекты
+layer_settings: Dict[str, float] = { # Слои, для которых максимизируем активации и их веса в общей сумме потерь. 
+    # Эти параметры можно настраивать и получать новые визуальные эффекты
     "mixed4": 1.0,
     "mixed5": 1.5,
     "mixed6": 2.0,
@@ -42,17 +43,17 @@ outputs_dict = dict( # Символические выходы каждого с
         for layer in [model.get_layer(name) for name in layer_settings.keys()]
     ]
 )
-#  Модель, возвращающая значения активаций для каждого целевого слоя (в форме словаря)
+#  Модель, возвращающая значения активаций для каждого выбранного слоя (в форме словаря)
 feature_extractor = keras.Model(inputs=model.inputs, outputs=outputs_dict)
 
 def compute_loss(input_image: tf.Tensor) -> tf.Tensor:
     """
     Вычисляет скалярное значение потерь для изображения
     """
-    features = feature_extractor(input_image) # Получаем признаки из предобученной сети
+    features = feature_extractor(input_image) # Получаем признаки (значения активаций) из предобученной сети
     loss: tf.Tensor = tf.zeros(shape=()) # Заводим тензор для ф-ции потерь
     for name in features.keys():
-        coeff: float = layer_settings[name] # Берем выходы каждого слоя
+        coeff: float = layer_settings[name] # Берем веса каждого слоя
         activation: tf.Tensor = features[name] # Берем активации каждого слоя (карты признаков)
         # Обрезаем активаци на 2 пик, **2 для полож-ых значений, находим среднее и умножаем на весовой коэфф. Добавляем к общему тензору
         loss += coeff * tf.reduce_mean(tf.square(activation[:, 2:-2, 2:-2, :]))
@@ -61,11 +62,20 @@ def compute_loss(input_image: tf.Tensor) -> tf.Tensor:
 
 
 @tf.function # Для ускорения функции gradient_ascent_step
-def gradient_ascent_step(image: tf.Tensor, learning_rate: float) -> Tuple[tf.Tensor, tf.Tensor]: # на вход изображение и скорость обучения (шаг, на который нужно изменить изображение на основе градиента)
+
+# Настроим процесс градиентного восхождения
+def gradient_ascent_step(image: tf.Tensor, learning_rate: float) -> Tuple[tf.Tensor, tf.Tensor]: 
+    """
+    image: Текущее изображение
+    learning_rate: Скорость обучения, которая определяет, насколько сильно мы будем менять изображение на каждом шаге
+        returns: 
+    loss: Значение функции потерь 
+    image: Обновленное изображение 
+    """
     with tf.GradientTape() as tape:
         tape.watch(image) 
         loss: tf.Tensor = compute_loss(image) # вычисляем скалярное значение потерь для текущего изображения
-    grads: tf.Tensor = tape.gradient(loss, image) # вычисляем градиент loss относительно image
+    grads: tf.Tensor = tape.gradient(loss, image) # вычисляем градиент loss относительно image (как нужно изменить пиксель, чтобы увеличить активации)
     grads = tf.math.l2_normalize(grads) # нормализуем
     # Получаем градиентное восхождение
     image += learning_rate * grads # для контроля шага изменения изображения
@@ -122,31 +132,40 @@ def deprocess_image(img: np.ndarray) -> np.ndarray:
     img = np.clip(img, 0, 255).astype("uint8")
     return img
 
+
 #  Выполнение градиентного восхождения с изменением изображения
+
+# Загрузка базового изображения
 original_img: np.ndarray = preprocess_image(base_image_path)
 original_shape: Tuple[int, int] = original_img.shape[1:3]
 
-successive_shapes: List[Tuple[int, int]] = [original_shape] # список хранит размеры всех октав (масштабов) изображения
-# Вычисление нужной формы изображения для разных октав 
+# список хранит размеры всех октав (масштабов) изображения
+successive_shapes: List[Tuple[int, int]] = [original_shape] 
+
+# Вычисление нужной формы изображения для разных октав (уменьшаем на octave_scale)
 for i in range(1, num_octave):
     shape: Tuple[int, int] = tuple([int(dim / (octave_scale ** i)) for dim in original_shape])
     successive_shapes.append(shape)
+
+# Переворачиваем список с размерами, чтобы сначала обрабатывать самые маленькие изображения, а потом самые большие
 successive_shapes = successive_shapes[::-1]
+# Уменьшаем оригинал картинки до самого маленького размера и сохр копией
+shrunk_original_img: tf.Tensor = tf.image.resize(original_img, successive_shapes[0]) 
+# Делаем копию исходного изображения
+img: tf.Tensor = tf.identity(original_img) 
 
-shrunk_original_img: tf.Tensor = tf.image.resize(original_img, successive_shapes[0]) # уменьшенная копия исходного изображения для восстановления деталей
-
-img: tf.Tensor = tf.identity(original_img) # делаем копию исходного изображения
 for i, shape in enumerate(successive_shapes):
     print(f"Processing octave {i} with shape {shape}")
-    img = tf.image.resize(img, shape) # масштабируем исходное изображение до размера текущей октавы
+    img = tf.image.resize(img, shape) # масштабируем копию исходного изображения до размера текущей октавы
     img = gradient_ascent_loop(
         img, iterations=iterations, learning_rate=step, max_loss=max_loss
     ) # считаем градиентное восхождение на текущем масштабе изображения и перезаписываем изборажние
+
     upscaled_shrunk_original_img: tf.Tensor = tf.image.resize(shrunk_original_img, shape) # масштабируем уменьшенную копию до размера текущей октавы
     same_size_original: tf.Tensor = tf.image.resize(original_img, shape) # масштабируем оригинал до размера текущей октавы
     lost_detail: tf.Tensor = same_size_original - upscaled_shrunk_original_img # находим разницу в деталях
     img += lost_detail # добавляем потерянные детали к картинке
-    shrunk_original_img = tf.image.resize(original_img, shape) # масштабируем оригинал для следующего шага
+    shrunk_original_img = tf.image.resize(original_img, shape) # обновляем уменьшенную копию после изменений
 
 keras.utils.save_img("dream.png", deprocess_image(img.numpy())) # сохраняем
 
